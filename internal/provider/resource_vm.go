@@ -828,27 +828,27 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 }
 
 func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribute string, meta any) resource.StateRefreshFunc {
-	return func() (any, string, error) {
-		err := resourceVMRead(ctx, d, meta)
-		if err != nil {
-			// TODO: How do we provide context easily without exploring the
-			//       diag.Diagnostics
-			return nil, "", fmt.Errorf("unable to read VM")
-		}
+    return func() (any, string, error) {
+        diags := resourceVMRead(ctx, d, meta)
+        if len(diags) > 0 {
+            tflog.Debug(ctx, "resourceVMRead returned diagnostics while waiting for VM attribute; continuing to poll", map[string]any{
+                "vm":    d.Get("name"),
+                "diags": diags.Error(),
+            })
+        }
 
-		// See if we can access our attribute
-		if attr, ok := d.GetOk(attribute); ok {
-			// Retrieve the VM properties
-			vm, err := vbox.GetMachine(d.Id())
-			if err != nil {
-				return nil, "", fmt.Errorf("unable to retrive vm: %w", err)
-			}
+        // See if we can access our attribute
+        if attr, ok := d.GetOk(attribute); ok {
+            vm, err := vbox.GetMachine(d.Id())
+            if err != nil {
+                return nil, "", fmt.Errorf("unable to retrieve vm: %w", err)
+            }
 
-			return &vm, attr.(string), nil
-		}
+            return &vm, attr.(string), nil
+        }
 
-		return nil, "", nil
-	}
+        return nil, "", nil
+    }
 }
 
 func fetchIfRemote(u *url.URL) (string, error) {
