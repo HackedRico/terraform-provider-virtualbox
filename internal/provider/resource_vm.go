@@ -815,19 +815,17 @@ func netVboxToTf(vm *vbox.Machine, d *schema.ResourceData) error {
 }
 
 func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []string, pending []string, attribute string, meta any, delay, interval time.Duration) (any, error) {
-	// Wait for the vm so we can get the networking attributes that show up
-	// after a while.
 	tflog.Debug(ctx, "waiting for vm to have required attribute value", map[string]any{
 		"vm":        d.Get("name"),
 		"attribute": attribute,
-		"target":    "target",
+		"target":    target,
 	})
 
 	stateConf := &resource.StateChangeConf{
 		Pending:        pending,
 		Target:         target,
 		Refresh:        newVMStateRefreshFunc(ctx, d, attribute, meta),
-		Timeout:        10 * time.Minute,
+		Timeout:        15 * time.Minute,
 		Delay:          delay,
 		MinTimeout:     interval,
 		NotFoundChecks: 60,
@@ -845,9 +843,7 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 			return nil, "", fmt.Errorf("unable to read VM")
 		}
 
-		// See if we can access our attribute
 		if attr, ok := d.GetOk(attribute); ok {
-			// Retrieve the VM properties
 			vm, err := vbox.GetMachine(d.Id())
 			if err != nil {
 				return nil, "", fmt.Errorf("unable to retrive vm: %w", err)
