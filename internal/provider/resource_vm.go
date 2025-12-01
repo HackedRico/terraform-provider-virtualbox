@@ -23,6 +23,8 @@ import (
 	vbox "github.com/terra-farm/go-virtualbox"
 )
 
+const defaultOSType = "Linux_64"
+
 var (
 	defaultBootOrder = []string{"disk", "none", "none", "none"}
 )
@@ -71,6 +73,13 @@ func resourceVM() *schema.Resource {
 				Type:     schema.TypeInt,
 				Optional: true,
 				Default:  "2",
+			},
+
+			"ostype": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     defaultOSType,
+				Description: "VirtualBox OS type ID (see VBoxManage list ostypes)",
 			},
 
 			"memory": {
@@ -342,7 +351,7 @@ func resourceVMCreate(ctx context.Context, d *schema.ResourceData, meta any) dia
 		return diag.Errorf("unable to convert Terraform data to VM properties: %v", err)
 	}
 	if err := vm.Modify(); err != nil {
-		return diag.Errorf("can't set up VM properties: %v", err)
+		return diag.Errorf("can't set up VM properties: %v (verify ostype via `VBoxManage list ostypes`)", err)
 	}
 
 	// Start the VM
@@ -483,7 +492,7 @@ func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) dia
 		return diag.Errorf("can't convert terraform config to virtual machine: %v", err)
 	}
 	if err := vm.Modify(); err != nil {
-		return diag.Errorf("unable to modify the vm: %v", err)
+		return diag.Errorf("unable to modify the vm: %v (verify ostype via `VBoxManage list ostypes`)", err)
 	}
 
 	if err := powerOnAndWait(ctx, d, vm, meta); err != nil {
@@ -533,7 +542,7 @@ func waitUntilVMIsReady(ctx context.Context, d *schema.ResourceData, vm *vbox.Ma
 func tfToVbox(ctx context.Context, d *schema.ResourceData, vm *vbox.Machine) error {
 	var err error
 
-	vm.OSType = "Linux_64"
+	vm.OSType = d.Get("ostype").(string)
 	vm.CPUs = uint(d.Get("cpus").(int))
 	bytes, err := humanize.ParseBytes(d.Get("memory").(string))
 	if err != nil {
