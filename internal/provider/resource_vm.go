@@ -827,7 +827,7 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 		Pending:        pending,
 		Target:         target,
 		Refresh:        newVMStateRefreshFunc(ctx, d, attribute, meta),
-		Timeout:        5 * time.Minute,
+		Timeout:        10 * time.Minute,
 		Delay:          delay,
 		MinTimeout:     interval,
 		NotFoundChecks: 60,
