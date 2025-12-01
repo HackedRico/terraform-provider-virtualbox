@@ -33,6 +33,7 @@ resource "virtualbox_vm" "node" {
   name      = format("node-%02d", count.index + 1)
   image     = "https://app.vagrantup.com/ubuntu/boxes/bionic64/versions/20180903.0.0/providers/virtualbox.box"
   cpus      = 2
+  ostype    = "Windows2022_64"
   memory    = "512 mib"
 
   network_adapter {
@@ -49,3 +50,5 @@ output "IPAddr_2" {
   value = element(virtualbox_vm.node.*.network_adapter.0.ipv4_address, 2)
 }
 ```
+
+Set `ostype` to the VirtualBox OS type ID reported by `VBoxManage list ostypes` to ensure the VM boots with the correct hardware profile.  The default is `Linux_64` for backwards compatibility.
