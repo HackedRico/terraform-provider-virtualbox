@@ -23,8 +23,6 @@ import (
 	vbox "github.com/terra-farm/go-virtualbox"
 )
 
-const defaultOSType = "Linux_64"
-
 var (
 	defaultBootOrder = []string{"disk", "none", "none", "none"}
 )
@@ -78,7 +76,7 @@ func resourceVM() *schema.Resource {
 			"ostype": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Default:     defaultOSType,
+				Default:     "Linux_64",
 				Description: "VirtualBox OS type ID (see VBoxManage list ostypes)",
 			},
 
