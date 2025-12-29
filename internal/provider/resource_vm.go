@@ -838,12 +838,12 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 
 func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribute string, meta any) resource.StateRefreshFunc {
 	return func() (any, string, error) {
-		err := resourceVMRead(ctx, d, meta)
-		if err != nil {
+		diags := resourceVMRead(ctx, d, meta)
+		if diags.HasError() {
 			// During VM startup, guest additions may not be ready yet to provide properties.
 			// Treat this as a pending state rather than fatal error - let timeout handle true failures.
 			tflog.Debug(ctx, "VM read failed during wait, treating as pending", map[string]any{
-				"error": err.Error(),
+				"diagnostics": diags,
 			})
 			return nil, "no", nil
 		}
