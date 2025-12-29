@@ -830,7 +830,7 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 		Timeout:        30 * time.Minute,
 		Delay:          delay,
 		MinTimeout:     interval,
-		NotFoundChecks: 60,
+		NotFoundChecks: 1800,
 	}
 
 	return stateConf.WaitForStateContext(ctx)
@@ -856,7 +856,9 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 			return &vm, attr.(string), nil
 		}
 
-		return nil, "", nil
+		// Return "no" as the state when attribute doesn't exist yet
+		// This matches the pending state and allows proper state transitions
+		return nil, "no", nil
 	}
 }
 
