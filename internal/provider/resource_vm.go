@@ -840,9 +840,12 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 	return func() (any, string, error) {
 		err := resourceVMRead(ctx, d, meta)
 		if err != nil {
-			// TODO: How do we provide context easily without exploring the
-			//       diag.Diagnostics
-			return nil, "", fmt.Errorf("unable to read VM")
+			// During VM startup, guest additions may not be ready yet to provide properties.
+			// Treat this as a pending state rather than fatal error - let timeout handle true failures.
+			tflog.Debug(ctx, "VM read failed during wait, treating as pending", map[string]any{
+				"error": err.Error(),
+			})
+			return nil, "no", nil
 		}
 
 		// See if we can access our attribute
@@ -850,7 +853,11 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 			// Retrieve the VM properties
 			vm, err := vbox.GetMachine(d.Id())
 			if err != nil {
-				return nil, "", fmt.Errorf("unable to retrive vm: %w", err)
+				// VM exists but can't retrieve properties - still starting up
+				tflog.Debug(ctx, "VM properties unavailable, treating as pending", map[string]any{
+					"error": err.Error(),
+				})
+				return nil, "no", nil
 			}
 
 			return &vm, attr.(string), nil
