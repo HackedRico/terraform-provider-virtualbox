@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +32,26 @@ var (
 
 func init() {
 	vbox.Verbose = true
+}
+
+// isAPIPA checks if an IP address is an APIPA (Automatic Private IP Addressing) address.
+// APIPA addresses are in the range 169.254.0.0/16 and are self-assigned when DHCP fails.
+func isAPIPA(ipAddr string) bool {
+	ip := net.ParseIP(ipAddr)
+	if ip == nil {
+		return false
+	}
+	// APIPA range: 169.254.0.0 to 169.254.255.255
+	_, apipa, _ := net.ParseCIDR("169.254.0.0/16")
+	return apipa.Contains(ip)
+}
+
+// isValidIPAddress checks if an IP address is valid and not an APIPA address.
+func isValidIPAddress(ipAddr string) bool {
+	if ipAddr == "" {
+		return false
+	}
+	return !isAPIPA(ipAddr)
 }
 
 func resourceVM() *schema.Resource {
@@ -772,10 +793,11 @@ func netVboxToTf(vm *vbox.Machine, d *schema.ResourceData) error {
 			}
 			out["status"] = osNic.status
 			out["ipv4_address"] = osNic.ipv4Addr
-			if osNic.ipv4Addr == "" {
-				out["ipv4_address_available"] = "no"
-			} else {
+			// Only consider non-APIPA addresses as available
+			if isValidIPAddress(osNic.ipv4Addr) {
 				out["ipv4_address_available"] = "yes"
+			} else {
+				out["ipv4_address_available"] = "no"
 			}
 
 			nics = append(nics, out)
