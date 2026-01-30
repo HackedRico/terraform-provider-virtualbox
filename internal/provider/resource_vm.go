@@ -54,6 +54,31 @@ func isValidIPAddress(ipAddr string) bool {
 	return !isAPIPA(ipAddr)
 }
 
+// resizeDisk resizes a VDI disk to the specified size in bytes.
+// Returns nil if diskPath is not a VDI file (VMDK cannot be resized).
+func resizeDisk(ctx context.Context, diskPath string, sizeBytes uint64) error {
+	ext := strings.ToLower(filepath.Ext(diskPath))
+	if ext != ".vdi" {
+		tflog.Warn(ctx, "Cannot resize non-VDI disk, skipping resize", map[string]any{
+			"disk":   diskPath,
+			"format": ext,
+		})
+		return nil
+	}
+
+	sizeInMB := sizeBytes / humanize.MiByte
+	_, _, err := vbox.Run(ctx, "modifymedium", "disk", diskPath, "--resize", fmt.Sprintf("%d", sizeInMB))
+	if err != nil {
+		return fmt.Errorf("failed to resize disk %s: %w", diskPath, err)
+	}
+
+	tflog.Debug(ctx, "Resized disk", map[string]any{
+		"disk":    diskPath,
+		"size_mb": sizeInMB,
+	})
+	return nil
+}
+
 func resourceVM() *schema.Resource {
 	return &schema.Resource{
 		Exists:        resourceVMExists,
@@ -186,6 +211,13 @@ func resourceVM() *schema.Resource {
 				Elem:        &schema.Schema{Type: schema.TypeString},
 				MaxItems:    4,
 			},
+
+			"disk_size": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Size of the primary disk (e.g., '20gib', '50gb'). Only works with VDI format. VMDK disks cannot be resized.",
+			},
 		},
 	}
 }
@@ -288,6 +320,20 @@ func resourceVMCreate(ctx context.Context, d *schema.ResourceData, meta any) dia
 	vmDisks, err := gatherDisks(vm.BaseFolder)
 	if err != nil {
 		return diag.Errorf("unable to gather disks: %v", err)
+	}
+
+	// Resize primary disk if disk_size is specified
+	if diskSize, ok := d.GetOk("disk_size"); ok {
+		sizeBytes, err := humanize.ParseBytes(diskSize.(string))
+		if err != nil {
+			return diag.Errorf("invalid disk_size format: %v", err)
+		}
+
+		if len(vmDisks) > 0 {
+			if err := resizeDisk(ctx, vmDisks[0], sizeBytes); err != nil {
+				return diag.Errorf("failed to resize disk: %v", err)
+			}
+		}
 	}
 
 	if err := vm.AddStorageCtl("SATA", vbox.StorageController{
