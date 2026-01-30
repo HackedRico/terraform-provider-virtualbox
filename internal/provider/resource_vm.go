@@ -371,6 +371,12 @@ func resourceVMCreate(ctx context.Context, d *schema.ResourceData, meta any) dia
 	if err := tfToVbox(ctx, d, vm); err != nil {
 		return diag.Errorf("unable to convert Terraform data to VM properties: %v", err)
 	}
+	tflog.Debug(ctx, "About to modify VM with properties", map[string]any{
+		"vm_name": vm.Name,
+		"ostype": vm.OSType,
+		"cpus": vm.CPUs,
+		"memory": vm.Memory,
+	})
 	if err := vm.Modify(); err != nil {
 		return diag.Errorf("can't set up VM properties: %v (verify ostype via `VBoxManage list ostypes`)", err)
 	}
@@ -450,6 +456,14 @@ func resourceVMRead(ctx context.Context, d *schema.ResourceData, meta any) diag.
 	if err != nil {
 		return diag.Errorf("can't set memory: %v", err)
 	}
+	err = d.Set("ostype", vm.OSType)
+	if err != nil {
+		return diag.Errorf("can't set ostype: %v", err)
+	}
+	tflog.Debug(ctx, "Read VM OS type from VirtualBox", map[string]any{
+		"ostype": vm.OSType,
+		"vm_name": vm.Name,
+	})
 
 	if err = netVboxToTf(vm, d); err != nil {
 		return diag.Errorf("can't convert vbox network to terraform data: %v", err)
@@ -564,6 +578,10 @@ func tfToVbox(ctx context.Context, d *schema.ResourceData, vm *vbox.Machine) err
 	var err error
 
 	vm.OSType = d.Get("ostype").(string)
+	tflog.Debug(ctx, "Setting VM OS type", map[string]any{
+		"ostype": vm.OSType,
+		"vm_name": vm.Name,
+	})
 	vm.CPUs = uint(d.Get("cpus").(int))
 	bytes, err := humanize.ParseBytes(d.Get("memory").(string))
 	if err != nil {
