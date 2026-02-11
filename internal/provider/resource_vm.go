@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -29,6 +30,26 @@ var (
 
 func init() {
 	vbox.Verbose = true
+}
+
+// isAPIPA checks if an IP address is an APIPA (Automatic Private IP Addressing) address.
+// APIPA addresses are in the range 169.254.0.0/16 and are self-assigned when DHCP fails.
+func isAPIPA(ipAddr string) bool {
+	ip := net.ParseIP(ipAddr)
+	if ip == nil {
+		return false
+	}
+	// APIPA range: 169.254.0.0 to 169.254.255.255
+	_, apipa, _ := net.ParseCIDR("169.254.0.0/16")
+	return apipa.Contains(ip)
+}
+
+// isValidIPAddress checks if an IP address is valid and not an APIPA address.
+func isValidIPAddress(ipAddr string) bool {
+	if ipAddr == "" {
+		return false
+	}
+	return !isAPIPA(ipAddr)
 }
 
 func resourceVM() *schema.Resource {
@@ -770,10 +791,11 @@ func netVboxToTf(vm *vbox.Machine, d *schema.ResourceData) error {
 			}
 			out["status"] = osNic.status
 			out["ipv4_address"] = osNic.ipv4Addr
-			if osNic.ipv4Addr == "" {
-				out["ipv4_address_available"] = "no"
-			} else {
+			// Only consider non-APIPA addresses as available
+			if isValidIPAddress(osNic.ipv4Addr) {
 				out["ipv4_address_available"] = "yes"
+			} else {
+				out["ipv4_address_available"] = "no"
 			}
 
 			nics = append(nics, out)
@@ -825,10 +847,10 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 		Pending:        pending,
 		Target:         target,
 		Refresh:        newVMStateRefreshFunc(ctx, d, attribute, meta),
-		Timeout:        10 * time.Minute,
+		Timeout:        30 * time.Minute,
 		Delay:          delay,
 		MinTimeout:     interval,
-		NotFoundChecks: 60,
+		NotFoundChecks: 1800,
 	}
 
 	return stateConf.WaitForStateContext(ctx)
@@ -836,11 +858,14 @@ func waitForVMAttribute(ctx context.Context, d *schema.ResourceData, target []st
 
 func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribute string, meta any) resource.StateRefreshFunc {
 	return func() (any, string, error) {
-		err := resourceVMRead(ctx, d, meta)
-		if err != nil {
-			// TODO: How do we provide context easily without exploring the
-			//       diag.Diagnostics
-			return nil, "", fmt.Errorf("unable to read VM")
+		diags := resourceVMRead(ctx, d, meta)
+		if diags.HasError() {
+			// During VM startup, guest additions may not be ready yet to provide properties.
+			// Treat this as a pending state rather than fatal error - let timeout handle true failures.
+			tflog.Debug(ctx, "VM read failed during wait, treating as pending", map[string]any{
+				"diagnostics": diags,
+			})
+			return nil, "no", nil
 		}
 
 		// See if we can access our attribute
@@ -848,13 +873,19 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 			// Retrieve the VM properties
 			vm, err := vbox.GetMachine(d.Id())
 			if err != nil {
-				return nil, "", fmt.Errorf("unable to retrive vm: %w", err)
+				// VM exists but can't retrieve properties - still starting up
+				tflog.Debug(ctx, "VM properties unavailable, treating as pending", map[string]any{
+					"error": err.Error(),
+				})
+				return nil, "no", nil
 			}
 
 			return &vm, attr.(string), nil
 		}
 
-		return nil, "", nil
+		// Return "no" as the state when attribute doesn't exist yet
+		// This matches the pending state and allows proper state transitions
+		return nil, "no", nil
 	}
 }
 
