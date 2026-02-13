@@ -18,6 +18,7 @@ resource "virtualbox_vm" "node" {
   image     = "https://app.vagrantup.com/ubuntu/boxes/bionic64/versions/20180903.0.0/providers/virtualbox.box"
   cpus      = 2
   memory    = "512 mib"
+  disk_size = "20 gib"
 
   network_adapter {
     type           = "hostonly"
@@ -39,6 +40,11 @@ The following arguments are supported:
 - `cpus`, int, optional, default=2: The number of CPUs.
 - `memory`, string, optional, default="512mib": The size of memory, allow human
   friendly units like 'MB', 'MiB'.
+- `disk_size`, string, optional: The desired disk size for the VM, allows human
+  friendly units like '10GB', '20GiB', '500MiB'. When set, cloned disks from the
+  source image will be resized to this value. Must be larger than the source
+  image's disk size. Note: VMDK disks are automatically converted to VDI format
+  to support resizing. Changing this value forces recreation of the VM.
 - `status`, string, optional, default="running": The status of the VM. This
   value will be updated at runtime to reflect the real status of the VM,
   and you can also specify it explicitly in config to manually control the

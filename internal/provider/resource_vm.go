@@ -132,6 +132,13 @@ func resourceVM() *schema.Resource {
 				Default:  "",
 			},
 
+			"disk_size": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Disk size for the VM, allows human friendly units like '10GB', '20GiB', '500MiB'. If set, cloned disks will be resized to this value. Must be larger than the source image disk size. VMDK disks will be converted to VDI format to support resizing.",
+			},
+
 			"network_adapter": {
 				Type:     schema.TypeList,
 				Optional: true,
@@ -279,6 +286,37 @@ func resourceVMCreate(ctx context.Context, d *schema.ResourceData, meta any) dia
 		imageOpMutex.Unlock()
 		if err != nil {
 			return diag.Errorf("failed to clone *.vdi and *.vmdk to VM folder: %v", err)
+		}
+	}
+
+	// Resize cloned disks if disk_size is specified
+	if diskSizeStr, ok := d.GetOk("disk_size"); ok {
+		clonedDisks, err := gatherDisks(vm.BaseFolder)
+		if err != nil {
+			return diag.Errorf("unable to gather disks for resizing: %v", err)
+		}
+		for _, disk := range clonedDisks {
+			// Skip configdrive disks — these are small cloud-init metadata disks
+			// that should not be resized
+			if strings.Contains(strings.ToLower(filepath.Base(disk)), "configdrive") {
+				tflog.Debug(ctx, "skipping configdrive disk from resizing", map[string]any{
+					"disk": disk,
+				})
+				continue
+			}
+			resized, err := resizeDisk(ctx, disk, diskSizeStr.(string))
+			if err != nil {
+				return diag.Errorf("failed to resize disk %s: %v", disk, err)
+			}
+			// If the disk was converted (VMDK -> VDI), remove the old VMDK
+			if resized != disk {
+				if err := os.Remove(disk); err != nil {
+					tflog.Warn(ctx, "failed to remove old VMDK after conversion", map[string]any{
+						"disk":  disk,
+						"error": err.Error(),
+					})
+				}
+			}
 		}
 	}
 
@@ -887,6 +925,50 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 		// This matches the pending state and allows proper state transitions
 		return nil, "no", nil
 	}
+}
+
+// resizeDisk resizes a virtual disk to the specified size.
+// VBoxManage modifymedium only supports VDI and VHD formats.
+// If the disk is a VMDK, it will be cloned to VDI format first, then resized.
+// Returns the final disk path (which may differ from input if format conversion occurred).
+func resizeDisk(ctx context.Context, diskPath string, sizeStr string) (string, error) {
+	sizeBytes, err := humanize.ParseBytes(sizeStr)
+	if err != nil {
+		return "", fmt.Errorf("cannot parse disk_size %q: %w", sizeStr, err)
+	}
+	// VBoxManage --resize expects size in MiB (binary megabytes)
+	sizeMiB := sizeBytes / humanize.MiByte
+	if sizeMiB == 0 {
+		return "", fmt.Errorf("disk_size %q is too small (must be at least 1 MiB)", sizeStr)
+	}
+
+	finalPath := diskPath
+	ext := strings.ToLower(filepath.Ext(diskPath))
+
+	// VMDK format does not support direct resize; convert to VDI first
+	if ext == ".vmdk" {
+		vdiPath := strings.TrimSuffix(diskPath, filepath.Ext(diskPath)) + ".vdi"
+		tflog.Info(ctx, "converting VMDK to VDI for resize support", map[string]any{
+			"source": diskPath,
+			"target": vdiPath,
+		})
+		stdout, stderr, err := vbox.Run(ctx, "clonehd", diskPath, vdiPath, "--format", "VDI")
+		if err != nil {
+			return "", fmt.Errorf("failed to convert VMDK to VDI: %w (stdout: %s, stderr: %s)", err, stdout, stderr)
+		}
+		finalPath = vdiPath
+	}
+
+	tflog.Info(ctx, "resizing disk", map[string]any{
+		"disk":     finalPath,
+		"size_mib": sizeMiB,
+	})
+	stdout, stderr, err := vbox.Run(ctx, "modifymedium", "disk", finalPath, "--resize", fmt.Sprintf("%d", sizeMiB))
+	if err != nil {
+		return "", fmt.Errorf("failed to resize disk to %d MiB: %w (stdout: %s, stderr: %s)", sizeMiB, err, stdout, stderr)
+	}
+
+	return finalPath, nil
 }
 
 func fetchIfRemote(u *url.URL) (string, error) {
