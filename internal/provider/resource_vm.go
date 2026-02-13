@@ -927,6 +927,30 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 	}
 }
 
+// getDiskSizeMiB queries VBoxManage for the current logical size of a disk in MiB.
+func getDiskSizeMiB(ctx context.Context, diskPath string) (uint64, error) {
+	stdout, stderr, err := vbox.Run(ctx, "showmediuminfo", "disk", diskPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get medium info for %s: %w (stderr: %s)", diskPath, err, stderr)
+	}
+	// Parse "Capacity:       40960 MBytes" from showmediuminfo output
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Capacity:") {
+			parts := strings.Fields(line)
+			// Expect: ["Capacity:", "<number>", "MBytes"]
+			if len(parts) >= 2 {
+				size, err := strconv.ParseUint(parts[1], 10, 64)
+				if err != nil {
+					return 0, fmt.Errorf("cannot parse disk capacity %q: %w", parts[1], err)
+				}
+				return size, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("could not find Capacity in showmediuminfo output for %s", diskPath)
+}
+
 // resizeDisk resizes a virtual disk to the specified size.
 // VBoxManage modifymedium only supports VDI and VHD formats.
 // If the disk is a VMDK, it will be cloned to VDI format first, then resized.
@@ -959,9 +983,26 @@ func resizeDisk(ctx context.Context, diskPath string, sizeStr string) (string, e
 		finalPath = vdiPath
 	}
 
+	// Check current disk size — VBoxManage cannot shrink, only grow
+	currentMiB, err := getDiskSizeMiB(ctx, finalPath)
+	if err != nil {
+		tflog.Warn(ctx, "could not determine current disk size, attempting resize anyway", map[string]any{
+			"disk":  finalPath,
+			"error": err.Error(),
+		})
+	} else if sizeMiB <= currentMiB {
+		tflog.Info(ctx, "disk is already equal to or larger than requested size, skipping resize", map[string]any{
+			"disk":          finalPath,
+			"current_mib":   currentMiB,
+			"requested_mib": sizeMiB,
+		})
+		return finalPath, nil
+	}
+
 	tflog.Info(ctx, "resizing disk", map[string]any{
-		"disk":     finalPath,
-		"size_mib": sizeMiB,
+		"disk":        finalPath,
+		"current_mib": currentMiB,
+		"target_mib":  sizeMiB,
 	})
 	stdout, stderr, err := vbox.Run(ctx, "modifymedium", "disk", finalPath, "--resize", fmt.Sprintf("%d", sizeMiB))
 	if err != nil {
