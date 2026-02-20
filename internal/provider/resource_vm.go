@@ -903,7 +903,8 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 			tflog.Debug(ctx, "VM read failed during wait, treating as pending", map[string]any{
 				"diagnostics": diags,
 			})
-			return nil, "no", nil
+			// Return a non-nil placeholder so this doesn't count as "not found"
+			return "pending", "no", nil
 		}
 
 		// See if we can access our attribute
@@ -915,7 +916,7 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 				tflog.Debug(ctx, "VM properties unavailable, treating as pending", map[string]any{
 					"error": err.Error(),
 				})
-				return nil, "no", nil
+				return "pending", "no", nil
 			}
 
 			return &vm, attr.(string), nil
@@ -923,7 +924,7 @@ func newVMStateRefreshFunc(ctx context.Context, d *schema.ResourceData, attribut
 
 		// Return "no" as the state when attribute doesn't exist yet
 		// This matches the pending state and allows proper state transitions
-		return nil, "no", nil
+		return "pending", "no", nil
 	}
 }
 
