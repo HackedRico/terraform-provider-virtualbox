@@ -480,9 +480,9 @@ func resourceVMRead(ctx context.Context, d *schema.ResourceData, meta any) diag.
 	if err != nil {
 		return diag.Errorf("can't set cpus: %v", err)
 	}
-	bytes := uint64(vm.Memory) * humanize.MiByte
-	repr := humanize.IBytes(bytes)
-	err = d.Set("memory", strings.ToLower(repr))
+	// Always store memory as MiB to avoid phantom diffs from format differences
+	// (e.g., "1.0 gib" vs "1024 mib" are the same value but different strings)
+	err = d.Set("memory", fmt.Sprintf("%d mib", vm.Memory))
 	if err != nil {
 		return diag.Errorf("can't set memory: %v", err)
 	}
@@ -533,7 +533,11 @@ func powerOnAndWait(ctx context.Context, d *schema.ResourceData, vm *vbox.Machin
 }
 
 func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	// TODO: allow partial updates
+	// Skip update if no modifiable attributes changed (avoids unnecessary poweroff/modify cycles)
+	if !d.HasChanges("cpus", "memory", "ostype", "network_adapter", "boot_order", "optical_disks", "status") {
+		tflog.Debug(ctx, "no modifiable attributes changed, skipping VM update")
+		return resourceVMRead(ctx, d, meta)
+	}
 
 	vm, err := vbox.GetMachine(d.Id())
 	if err != nil {
@@ -544,12 +548,15 @@ func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) dia
 		return diag.Errorf("unable to poweroff machine %s: %v", d.Id(), err)
 	}
 
+	// Brief pause to allow VBoxManage to fully release locks after poweroff
+	time.Sleep(1 * time.Second)
+
 	// Modify VM
 	if err := tfToVbox(ctx, d, vm); err != nil {
 		return diag.Errorf("can't convert terraform config to virtual machine: %v", err)
 	}
-	if err := vm.Modify(); err != nil {
-		return diag.Errorf("unable to modify the vm: %v (verify ostype via `VBoxManage list ostypes`)", err)
+	if err := modifyVM(ctx, vm); err != nil {
+		return diag.Errorf("unable to modify the vm: %v", err)
 	}
 
 	if err := powerOnAndWait(ctx, d, vm, meta); err != nil {
@@ -558,6 +565,68 @@ func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) dia
 
 	// Errors are already logged
 	return resourceVMRead(ctx, d, meta)
+}
+
+// modifyVM runs VBoxManage modifyvm directly (instead of the library's vm.Modify())
+// so we can capture stderr and provide meaningful error messages.
+func modifyVM(ctx context.Context, vm *vbox.Machine) error {
+	args := []string{"modifyvm", vm.Name,
+		"--firmware", vm.Firmware,
+		"--bioslogofadein", "off",
+		"--bioslogofadeout", "off",
+		"--bioslogodisplaytime", "0",
+		"--biosbootmenu", "disabled",
+		"--ostype", vm.OSType,
+		"--cpus", fmt.Sprintf("%d", vm.CPUs),
+		"--memory", fmt.Sprintf("%d", vm.Memory),
+		"--vram", fmt.Sprintf("%d", vm.VRAM),
+		"--acpi", vm.Flag.Get(vbox.ACPI),
+		"--ioapic", vm.Flag.Get(vbox.IOAPIC),
+		"--rtcuseutc", vm.Flag.Get(vbox.RTCUSEUTC),
+		"--cpuhotplug", vm.Flag.Get(vbox.CPUHOTPLUG),
+		"--pae", vm.Flag.Get(vbox.PAE),
+		"--longmode", vm.Flag.Get(vbox.LONGMODE),
+		"--hpet", vm.Flag.Get(vbox.HPET),
+		"--hwvirtex", vm.Flag.Get(vbox.HWVIRTEX),
+		"--triplefaultreset", vm.Flag.Get(vbox.TRIPLEFAULTRESET),
+		"--nestedpaging", vm.Flag.Get(vbox.NESTEDPAGING),
+		"--largepages", vm.Flag.Get(vbox.LARGEPAGES),
+		"--vtxvpid", vm.Flag.Get(vbox.VTXVPID),
+		"--vtxux", vm.Flag.Get(vbox.VTXUX),
+		"--accelerate3d", vm.Flag.Get(vbox.ACCELERATE3D),
+	}
+
+	for i, dev := range vm.BootOrder {
+		if i > 3 {
+			break
+		}
+		args = append(args, fmt.Sprintf("--boot%d", i+1), dev)
+	}
+
+	for i, nic := range vm.NICs {
+		n := i + 1
+		args = append(args,
+			fmt.Sprintf("--nic%d", n), string(nic.Network),
+			fmt.Sprintf("--nictype%d", n), string(nic.Hardware),
+			fmt.Sprintf("--cableconnected%d", n), "on")
+		if nic.Network == vbox.NICNetHostonly {
+			args = append(args, fmt.Sprintf("--hostonlyadapter%d", n), nic.HostInterface)
+		} else if nic.Network == vbox.NICNetBridged {
+			args = append(args, fmt.Sprintf("--bridgeadapter%d", n), nic.HostInterface)
+		}
+	}
+
+	tflog.Debug(ctx, "running modifyvm", map[string]any{"args": args})
+	_, stderr, err := vbox.Run(ctx, args...)
+	if err != nil {
+		detail := strings.TrimSpace(stderr)
+		if detail != "" {
+			return fmt.Errorf("%v: %s", err, detail)
+		}
+		return fmt.Errorf("%v (verify ostype via `VBoxManage list ostypes`)", err)
+	}
+
+	return vm.Refresh()
 }
 
 func resourceVMDelete(d *schema.ResourceData, meta any) error {
