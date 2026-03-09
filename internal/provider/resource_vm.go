@@ -135,7 +135,8 @@ func resourceVM() *schema.Resource {
 			"disk_size": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "Disk size for the VM, allows human friendly units like '10GB', '20GiB', '500MiB'. If set, disks will be resized to this value. Expansion only — must be larger than current size. Shrinking is not supported. VMDK disks are converted to VDI for resizing.",
+				ForceNew:    true,
+				Description: "Disk size for the VM, allows human friendly units like '10GB', '20GiB', '500MiB'. If set, cloned disks will be resized to this value. Must be larger than the source image disk size. VMDK disks will be converted to VDI format to support resizing.",
 			},
 
 			"network_adapter": {
@@ -516,25 +517,6 @@ func resourceVMRead(ctx context.Context, d *schema.ResourceData, meta any) diag.
 		return diag.Errorf("can't set boot_order: %v", err)
 	}
 
-	// Set disk_size from primary disk for drift detection (only when disk_size was configured)
-	if _, ok := d.GetOk("disk_size"); ok {
-		vmDisks, err := gatherDisks(vm.BaseFolder)
-		if err == nil && len(vmDisks) > 0 {
-			for _, diskPath := range vmDisks {
-				if strings.Contains(strings.ToLower(filepath.Base(diskPath)), "configdrive") {
-					continue
-				}
-				sizeMiB, err := getDiskSizeMiB(ctx, diskPath)
-				if err == nil {
-					if err := d.Set("disk_size", fmt.Sprintf("%d mib", sizeMiB)); err != nil {
-						return diag.Errorf("can't set disk_size: %v", err)
-					}
-					break
-				}
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -552,7 +534,7 @@ func powerOnAndWait(ctx context.Context, d *schema.ResourceData, vm *vbox.Machin
 
 func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	// Skip update if no modifiable attributes changed (avoids unnecessary poweroff/modify cycles)
-	if !d.HasChanges("cpus", "memory", "ostype", "network_adapter", "boot_order", "optical_disks", "status", "disk_size") {
+	if !d.HasChanges("cpus", "memory", "ostype", "network_adapter", "boot_order", "optical_disks", "status") {
 		tflog.Debug(ctx, "no modifiable attributes changed, skipping VM update")
 		return resourceVMRead(ctx, d, meta)
 	}
@@ -568,39 +550,6 @@ func resourceVMUpdate(ctx context.Context, d *schema.ResourceData, meta any) dia
 
 	// Brief pause to allow VBoxManage to fully release locks after poweroff
 	time.Sleep(1 * time.Second)
-
-	// Resize disks if disk_size changed
-	if d.HasChange("disk_size") {
-		if diskSizeStr, ok := d.GetOk("disk_size"); ok {
-			clonedDisks, err := gatherDisks(vm.BaseFolder)
-			if err != nil {
-				return diag.Errorf("unable to gather disks for resizing: %v", err)
-			}
-			for i, disk := range clonedDisks {
-				if strings.Contains(strings.ToLower(filepath.Base(disk)), "configdrive") {
-					continue
-				}
-				resized, err := resizeDisk(ctx, disk, diskSizeStr.(string))
-				if err != nil {
-					return diag.Errorf("failed to resize disk %s: %v", disk, err)
-				}
-				// If the disk was converted (VMDK -> VDI), remove the old VMDK and update storage attachment
-				if resized != disk {
-					if err := os.Remove(disk); err != nil {
-						tflog.Warn(ctx, "failed to remove old VMDK after conversion", map[string]any{
-							"disk":  disk,
-							"error": err.Error(),
-						})
-					}
-					// Update VM storage attachment to point to new VDI
-					_, stderr, err := vbox.Run(ctx, "storageattach", vm.Name, "--storagectl", "SATA", "--port", strconv.Itoa(i), "--medium", resized)
-					if err != nil {
-						return diag.Errorf("failed to update storage attachment after VMDK conversion: %v (stderr: %s)", err, stderr)
-					}
-				}
-			}
-		}
-	}
 
 	// Modify VM
 	if err := tfToVbox(ctx, d, vm); err != nil {
@@ -1112,10 +1061,7 @@ func resizeDisk(ctx context.Context, diskPath string, sizeStr string) (string, e
 			"error": err.Error(),
 		})
 	} else if sizeMiB <= currentMiB {
-		if sizeMiB < currentMiB {
-			return "", fmt.Errorf("shrinking is not supported: requested %d MiB is smaller than current %d MiB; use a larger size or recreate the VM", sizeMiB, currentMiB)
-		}
-		tflog.Info(ctx, "disk is already equal to requested size, skipping resize", map[string]any{
+		tflog.Info(ctx, "disk is already equal to or larger than requested size, skipping resize", map[string]any{
 			"disk":          finalPath,
 			"current_mib":   currentMiB,
 			"requested_mib": sizeMiB,
